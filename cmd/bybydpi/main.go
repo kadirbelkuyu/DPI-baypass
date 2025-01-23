@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 
 	"github.com/kadirbelkuyu/DPI-bypass/internal/domain/bypass"
@@ -14,9 +15,7 @@ import (
 )
 
 func main() {
-	// Declare and initialize config outside RunE
-	config := *util.GetConfig()
-
+	config := util.GetConfig()
 	var debug bool
 	var proxyAddr string
 	var proxyPort int
@@ -25,10 +24,11 @@ func main() {
 		Use:   "bybydpi",
 		Short: "DPI bypass tool",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			config.Debug = debug
 
 			var logger *zap.Logger
 			var err error
-			if debug {
+			if config.Debug {
 				logger, err = zap.NewDevelopment()
 			} else {
 				logger, err = zap.NewProduction()
@@ -36,57 +36,54 @@ func main() {
 			if err != nil {
 				return err
 			}
+			defer logger.Sync()
 
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 
 			sigChan := make(chan os.Signal, 1)
-			signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+			signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 			go func() {
 				sig := <-sigChan
-				logger.Info("Received signal, shutting down...", zap.String("signal", sig.String()))
+				logger.Info("Shutting down...", zap.String("signal", sig.String()))
 
-				if err := proxy.ConfigureSystemProxy(false, proxyAddr, proxyPort); err != nil {
-					logger.Error("Failed to cleanup proxy settings", zap.Error(err))
+				if runtime.GOOS == "darwin" {
+					proxy.ConfigureMacProxy(false, "", 0)
+				} else if runtime.GOOS == "linux" {
+					proxy.ConfigureLinuxProxy(false, "", 0)
 				}
-
 				os.Exit(0)
 			}()
 
-			if err := proxy.ConfigureSystemProxy(true, proxyAddr, proxyPort); err != nil {
-				logger.Error("Failed to configure system proxy", zap.Error(err))
-				return err
+			if runtime.GOOS == "darwin" {
+				if err := proxy.ConfigureMacProxy(true, proxyAddr, proxyPort); err != nil {
+					logger.Error("Mac proxy error", zap.Error(err))
+				}
+			} else if runtime.GOOS == "linux" {
+				if err := proxy.ConfigureLinuxProxy(true, proxyAddr, proxyPort); err != nil {
+					logger.Error("Linux proxy error", zap.Error(err))
+				}
 			}
 
-			service := bypass.NewService(config)
-
+			service := bypass.NewService(*config)
 			go func() {
 				if err := service.Start(); err != nil {
-					logger.Error("Bypass service encountered an error", zap.Error(err))
+					logger.Error("Service error", zap.Error(err))
 				}
 			}()
 
 			server := proxy.NewServer(proxyAddr, proxyPort, logger)
-
-			logger.Info("Verify TUN or iptables setup is correct")
-
+			logger.Info("Proxy server started", zap.String("addr", proxyAddr), zap.Int("port", proxyPort))
 			return server.Start(ctx)
 		},
 	}
 
-	flags := rootCmd.Flags()
-	flags.StringVar(&config.Interface, "interface", config.Interface, "Network interface to use")
-	flags.IntVar(&config.MTU, "mtu", config.MTU, "Maximum Transmission Unit")
-	flags.IntVar(&config.FragmentSize, "fragment-size", config.FragmentSize, "Fragment size for payload splitting")
-	flags.IntVar(&config.Workers, "workers", config.Workers, "Number of packet processing workers")
-	flags.BoolVar(&config.EnableLogging, "logging", config.EnableLogging, "Enable logging")
-	flags.BoolVar(&debug, "debug", debug, "Enable debug mode (includes detailed logging)")
-	flags.IntVar(&config.RateLimit, "rate-limit", config.RateLimit, "Maximum packets per second")
-	flags.IntVar(&config.QueueSize, "queue-size", config.QueueSize, "Packet queue size")
-	flags.IntVar(&config.CleanupFreq, "cleanup-freq", config.CleanupFreq, "Connection cleanup frequency in seconds")
-	flags.StringVar(&proxyAddr, "proxy-addr", proxyAddr, "Proxy listen address")
-	flags.IntVar(&proxyPort, "proxy-port", proxyPort, "Proxy listen port")
+	rootCmd.Flags().StringVar(&config.Interface, "interface", "en0", "Network interface")
+	rootCmd.Flags().IntVar(&config.MTU, "mtu", 1500, "MTU size")
+	rootCmd.Flags().BoolVar(&debug, "debug", false, "Enable debug mode")
+	rootCmd.Flags().StringVar(&proxyAddr, "proxy-addr", "127.0.0.1", "Proxy address")
+	rootCmd.Flags().IntVar(&proxyPort, "proxy-port", 8080, "Proxy port")
 
 	if err := rootCmd.Execute(); err != nil {
 		panic(err)

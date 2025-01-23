@@ -3,56 +3,36 @@ package proxy
 import (
 	"fmt"
 	"os/exec"
-	"runtime"
-	"strconv"
-	"strings"
 )
 
-func ConfigureSystemProxy(enable bool, addr string, port int) error {
-	switch runtime.GOOS {
-	case "darwin":
-		return configureMacOSProxy(enable, addr, port)
-	case "linux":
-		return configureLinuxProxy(enable, addr, port)
-	default:
-		return fmt.Errorf("unsupported operating system: %s", runtime.GOOS)
+func ConfigureMacProxy(enable bool, addr string, port int) error {
+	action := "off"
+	if enable {
+		cmd := exec.Command("networksetup", "-setwebproxy", "Wi-Fi", addr, fmt.Sprintf("%d", port))
+		if err := cmd.Run(); err != nil {
+			return err
+		}
+		action = "on"
 	}
+
+	cmd := exec.Command("networksetup", "-setwebproxystate", "Wi-Fi", action)
+	if !enable {
+		cmd = exec.Command("networksetup", "-setdnsservers", "Wi-Fi", "empty")
+	}
+	return cmd.Run()
 }
 
-func configureMacOSProxy(enable bool, addr string, port int) error {
-	out, err := exec.Command("networksetup", "-listallnetworkservices").Output()
-	if err != nil {
-		return err
-	}
-
-	services := []string{}
-	for _, service := range strings.Split(string(out), "\n") {
-		if !strings.HasPrefix(service, "*") && service != "" {
-			services = append(services, service)
+func ConfigureLinuxProxy(enable bool, addr string, port int) error {
+	if enable {
+		cmd := exec.Command("gsettings", "set", "org.gnome.system.proxy", "mode", "'manual'")
+		if err := cmd.Run(); err != nil {
+			return err
 		}
+		cmd = exec.Command("gsettings", "set", "org.gnome.system.proxy.http", "host", addr)
+		cmd.Run()
+		cmd = exec.Command("gsettings", "set", "org.gnome.system.proxy.http", "port", fmt.Sprintf("%d", port))
+		return cmd.Run()
 	}
-
-	for _, network := range services {
-		if enable {
-			err = exec.Command("networksetup", "-setwebproxy", network, addr, strconv.Itoa(port)).Run()
-			if err == nil {
-				err = exec.Command("networksetup", "-setsecurewebproxy", network, addr, strconv.Itoa(port)).Run()
-			}
-		} else {
-			err = exec.Command("networksetup", "-setwebproxystate", network, "off").Run()
-			if err == nil {
-				err = exec.Command("networksetup", "-setsecurewebproxystate", network, "off").Run()
-			}
-		}
-		if err == nil {
-			break
-		}
-	}
-	return err
+	cmd := exec.Command("gsettings", "set", "org.gnome.system.proxy", "mode", "'none'")
+	return cmd.Run()
 }
-
-func configureLinuxProxy(enable bool, addr string, port int) error {
-
-	return nil
-}
-

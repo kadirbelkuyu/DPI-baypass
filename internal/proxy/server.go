@@ -55,6 +55,31 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 }
 
+func (s *Server) resolveHost(host string) (string, error) {
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
+			d := net.Dialer{}
+			return d.DialContext(ctx, "udp", "8.8.8.8:53") // Google DNS
+		},
+	}
+
+	var ips []net.IP
+	var err error
+	for i := 0; i < 3; i++ {
+		ips, err = resolver.LookupIP(context.Background(), "ip", host)
+		if err == nil {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	if err != nil {
+		return "", err
+	}
+	return ips[0].String(), nil
+}
+
 func (s *Server) handleConnection(ctx context.Context, clientConn net.Conn) {
 	defer clientConn.Close()
 
