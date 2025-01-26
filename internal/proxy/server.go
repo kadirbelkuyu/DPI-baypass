@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -38,7 +39,7 @@ func (s *Server) Start(ctx context.Context) error {
 	addr := net.JoinHostPort(s.addr, strconv.Itoa(s.port))
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to start proxy server: %v", err)
 	}
 	defer listener.Close()
 
@@ -47,8 +48,13 @@ func (s *Server) Start(ctx context.Context) error {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			s.logger.Error("Accept error", zap.Error(err))
-			continue
+			select {
+			case <-ctx.Done():
+				return nil
+			default:
+				s.logger.Error("Failed to accept connection", zap.Error(err))
+				continue
+			}
 		}
 
 		go s.handleConnection(ctx, conn)
@@ -89,23 +95,23 @@ func (s *Server) handleConnection(ctx context.Context, clientConn net.Conn) {
 		return
 	}
 
-	s.logger.Debug("Request received",
-		zap.String("host", req.Host),
-		zap.String("method", req.Method))
-
-	host, port, err := net.SplitHostPort(req.Host)
-	if err != nil {
-		host = req.Host
-		port = "443"
+	host := req.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
 	}
 
-	ip, err := s.resolver.ResolveHost(host)
+	ip, err := s.resolveHostWithFallback(host)
 	if err != nil {
 		s.logger.Error("DNS resolution failed", zap.Error(err))
 		return
 	}
 
-	serverConn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, port), 5*time.Second)
+	port := "80"
+	if req.Method == http.MethodConnect {
+		port = "443"
+	}
+
+	serverConn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, port), 10*time.Second)
 	if err != nil {
 		s.logger.Error("Dial error", zap.Error(err))
 		return
@@ -113,9 +119,49 @@ func (s *Server) handleConnection(ctx context.Context, clientConn net.Conn) {
 	defer serverConn.Close()
 
 	if req.Method == http.MethodConnect {
-		_, _ = clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
+		clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
+	} else {
+		req.Write(serverConn)
 	}
 
-	go io.Copy(serverConn, clientConn)
-	io.Copy(clientConn, serverConn)
+	// Bidirectional copy with larger buffer
+	errChan := make(chan error, 2)
+	go func() {
+		buf := make([]byte, 65536)
+		_, err := io.CopyBuffer(serverConn, clientConn, buf)
+		errChan <- err
+	}()
+
+	go func() {
+		buf := make([]byte, 65536)
+		_, err := io.CopyBuffer(clientConn, serverConn, buf)
+		errChan <- err
+	}()
+
+	<-errChan
+}
+
+func (s *Server) resolveHostWithFallback(host string) (string, error) {
+	// Try built-in resolver first
+	if ip := net.ParseIP(host); ip != nil {
+		return host, nil
+	}
+
+	// Try custom resolver
+	ip, err := s.resolver.ResolveHost(host)
+	if err == nil {
+		return ip, nil
+	}
+
+	// Fallback to system resolver
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve %s: %v", host, err)
+	}
+
+	if len(ips) == 0 {
+		return "", fmt.Errorf("no IP addresses found for %s", host)
+	}
+
+	return ips[0].String(), nil
 }

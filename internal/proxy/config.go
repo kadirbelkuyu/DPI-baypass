@@ -12,6 +12,10 @@ func ConfigureMacProxy(enable bool, addr string, port int) error {
 		if err := cmd.Run(); err != nil {
 			return err
 		}
+		cmd = exec.Command("networksetup", "-setsecurewebproxy", "Wi-Fi", addr, fmt.Sprintf("%d", port))
+		if err := cmd.Run(); err != nil {
+			return err
+		}
 		action = "on"
 	}
 
@@ -24,15 +28,19 @@ func ConfigureMacProxy(enable bool, addr string, port int) error {
 
 func ConfigureLinuxProxy(enable bool, addr string, port int) error {
 	if enable {
-		cmd := exec.Command("gsettings", "set", "org.gnome.system.proxy", "mode", "'manual'")
+		cmd := exec.Command("gsettings", "set", "org.gnome.system.proxy", "mode", "manual")
 		if err := cmd.Run(); err != nil {
 			return err
 		}
 		cmd = exec.Command("gsettings", "set", "org.gnome.system.proxy.http", "host", addr)
 		cmd.Run()
 		cmd = exec.Command("gsettings", "set", "org.gnome.system.proxy.http", "port", fmt.Sprintf("%d", port))
+		cmd.Run()
+		cmd = exec.Command("gsettings", "set", "org.gnome.system.proxy.https", "host", addr)
+		cmd.Run()
+		cmd = exec.Command("gsettings", "set", "org.gnome.system.proxy.https", "port", fmt.Sprintf("%d", port))
 		return cmd.Run()
 	}
-	cmd := exec.Command("gsettings", "set", "org.gnome.system.proxy", "mode", "'none'")
+	cmd := exec.Command("gsettings", "set", "org.gnome.system.proxy", "mode", "none")
 	return cmd.Run()
 }

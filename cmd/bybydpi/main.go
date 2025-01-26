@@ -6,6 +6,7 @@ import (
 	"os/signal"
 	"runtime"
 	"syscall"
+	"os/exec"
 
 	"github.com/kadirbelkuyu/DPI-bypass/internal/domain/bypass"
 	"github.com/kadirbelkuyu/DPI-bypass/internal/proxy"
@@ -59,10 +60,15 @@ func main() {
 			if runtime.GOOS == "darwin" {
 				if err := proxy.ConfigureMacProxy(true, proxyAddr, proxyPort); err != nil {
 					logger.Error("Mac proxy error", zap.Error(err))
+					return err
 				}
+				// Configure DNS servers for local resolver
+				exec.Command("networksetup", "-setdnsservers", "Wi-Fi", 
+					"1.1.1.1", "8.8.8.8", "9.9.9.9").Run()
 			} else if runtime.GOOS == "linux" {
 				if err := proxy.ConfigureLinuxProxy(true, proxyAddr, proxyPort); err != nil {
 					logger.Error("Linux proxy error", zap.Error(err))
+					return err
 				}
 			}
 
